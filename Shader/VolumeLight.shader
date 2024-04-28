@@ -88,17 +88,17 @@ Shader "Custom/VolumeLight"
 
             inline float GetShadow(float3 worldPos)
             {
-                ShadowSamplingData spd = GetMainLightShadowSamplingData();
-                float4 params = GetMainLightShadowParams();
-                int shadowSliceIndex = params.w;
-                if (shadowSliceIndex < 0)
-                    return 1.0;
+                // ShadowSamplingData spd = GetMainLightShadowSamplingData();
+                // float4 params = GetMainLightShadowParams();
+                // int shadowSliceIndex = params.w;
+                // if (shadowSliceIndex < 0)
+                //    return 1.0;
 
-                float4 shadowCoord = TransformWorldToShadowCoord(worldPos);
-                return SampleShadowmap(TEXTURE2D_ARGS(_MainLightShadowmapTexture, sampler_LinearClampCompare), shadowCoord, spd, params, true);
                 // float4 shadowCoord = TransformWorldToShadowCoord(worldPos);
-                // float shadow = MainLightRealtimeShadow(shadowCoord);
-                // return shadow * _ShadowIntensity + 1 - _ShadowIntensity;
+                // return SampleShadowmap(TEXTURE2D_ARGS(_MainLightShadowmapTexture, sampler_LinearClampCompare), shadowCoord, spd, params, true);
+                float4 shadowCoord = TransformWorldToShadowCoord(worldPos);
+                float shadow = MainLightRealtimeShadow(shadowCoord);
+                return shadow * _ShadowIntensity + 1 - _ShadowIntensity;
             }
 
             float4 frag(vertOut i) : SV_Target
@@ -126,8 +126,8 @@ Shader "Custom/VolumeLight"
                 }
                 float4 lightColor = float4(totalIntensity * _LightColor0.rgb, totalIntensity);
                 float3 texColor = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv).rgb;
-                float3 finalColor = texColor * lightColor;
-                return float4(finalColor, 1);
+                float3 finalColor = saturate(texColor * lightColor);
+                return float4(finalColor.xyz, 1);
             }
 
             ENDHLSL
@@ -149,7 +149,6 @@ Shader "Custom/VolumeLight"
             #pragma vertex vert
             #pragma fragment frag
 
-            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
 
