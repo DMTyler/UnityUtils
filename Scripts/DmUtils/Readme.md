@@ -13,3 +13,4 @@
 
 TODO:
 1. 完善 Decoration 相关逻辑
+2. 实现一个完全深拷贝（Deepcopy实例且实例中的所有引用对象及其迭代子引用对象都被拷贝），但是现有思路需求 unsafe， 考虑结合 C++ dll 能否绕过unsafe？（object 在 IL 中可以直接转换为 void*）
