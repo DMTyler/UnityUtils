@@ -2,6 +2,7 @@
 #ifndef EPSILON
 #define EPSILON 1e-6
 #endif
+#define LIGHTMAP_ON
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
 inline float NormalDistributionGGX(float3 N, float3 H, float roughness)
@@ -180,19 +181,15 @@ float4 BRDF(BRDFSurface surface)
     float3 V = normalize(surface.viewDir);
     float3 f0 = float3(0.04, 0.04, 0.04);
     f0 = lerp(f0, surface.albedo, surface.metallic);
+    float4 shadowCoord = TransformWorldToShadowCoord(surface.worldPos);
 
-    Light mainLight = GetMainLight();
+    Light mainLight = GetMainLight(shadowCoord);
     float3 L = mainLight.direction;
     float3 H = normalize(V + L);
     float3 Lo = float3(0, 0, 0);
 
     // 1. main light
-#ifdef SHADOW_RECEIVER
-    float attenuation = mainLight.shadowAttenuation;
-    float3 radiance = mainLight.color * attenuation;
-#else
-    float3 radiance = mainLight.color * mainLight.distanceAttenuation;
-#endif
+    float3 radiance = mainLight.color * mainLight.distanceAttenuation * mainLight.shadowAttenuation;
     float NDF = NormalDistributionGGX(N, H, surface.roughness);
     float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
     float3 F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
@@ -210,14 +207,10 @@ float4 BRDF(BRDFSurface surface)
     // 2. additional lights
     for (int i = 0; i < GetAdditionalLightsCount(); i++)
     {
-        Light additionalLight = GetAdditionalLight(i, surface.worldPos);
+        Light additionalLight = GetAdditionalLight(i, surface.worldPos, shadowCoord);
         float3 L = additionalLight.direction;
         float3 H = normalize(V + L);
-        #ifdef SHADOW_RECEIVER
-        float3 radiance = additionalLight.color * additionalLight.shadowAttenuation;
-        #else
-        float3 radiance = additionalLight.color * additionalLight.distanceAttenuation;
-        #endif
+        float3 radiance = additionalLight.color * additionalLight.distanceAttenuation * additionalLight.shadowAttenuation;
         float NDF = NormalDistributionGGX(N, H, surface.roughness);
         float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
         float3 F = FresnelSchlick(clamp(dot(H, V), 0 ,1), f0);
@@ -233,19 +226,23 @@ float4 BRDF(BRDFSurface surface)
     }
 
     float3 ambient = float3(0.5, 0.5, 0.5) * surface.albedo * surface.ao;
-    float4 color = float4(ambient + Lo, 1);
-    return color;
+    float3 color = ambient + Lo;
+    color = MixFogColor(color.rgb, unity_FogColor, unity_FogParams.x);
+    
+    return float4(color, 1);
 }
 
 struct IBLSurface
 {
     float3 worldPos;
     float3 normalDir;
+    float3 realNormalDir; // the normal dir of mesh
     float3 viewDir; 
     float4 albedo; 
     float metallic; 
     float roughness;
     float ao; // ambient occlusion
+    float2 lightUV; // lightmap UV
     float3 irradiance; // ambient color, should from IBL
     float3 specular;
 };
@@ -273,19 +270,15 @@ float4 IBL(IBLSurface surface)
     float3 V = normalize(surface.viewDir);
     float3 f0 = float3(0.04, 0.04, 0.04);
     f0 = lerp(f0, surface.albedo, surface.metallic);
+    float4 shadowCoord = TransformWorldToShadowCoord(surface.worldPos);
 
-    Light mainLight = GetMainLight();
+    Light mainLight = GetMainLight(shadowCoord);
     float3 L = mainLight.direction;
     float3 H = normalize(V + L);
     float3 Lo = float3(0, 0, 0);
 
     // 1. main light
-#ifdef SHADOW_RECEIVER
-    float attenuation = mainLight.shadowAttenuation;
-    float3 radiance = mainLight.color * attenuation;
-#else
-    float3 radiance = mainLight.color * mainLight.distanceAttenuation;
-#endif
+    float3 radiance = mainLight.color * mainLight.distanceAttenuation * mainLight.shadowAttenuation;
     float NDF = NormalDistributionGGX(N, H, surface.roughness);
     float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
     float3 F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
@@ -302,13 +295,13 @@ float4 IBL(IBLSurface surface)
     // 2. additional lights
     for (int i = 0; i < GetAdditionalLightsCount(); i++)
     {
-        Light additionalLight = GetAdditionalLight(i, surface.worldPos);
+        Light additionalLight = GetAdditionalLight(i, surface.worldPos, shadowCoord);
         float3 L = additionalLight.direction;
         float3 H = normalize(V + L);
         #ifdef SHADOW_RECEIVER
         float3 radiance = additionalLight.color * additionalLight.shadowAttenuation;
         #else
-        float3 radiance = additionalLight.color * additionalLight.distanceAttenuation;
+        float3 radiance = additionalLight.color * additionalLight.distanceAttenuation * additionalLight.shadowAttenuation;
         #endif
         float NDF = NormalDistributionGGX(N, H, surface.roughness);
         float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
@@ -324,6 +317,24 @@ float4 IBL(IBLSurface surface)
         Lo += (kd * surface.albedo / PI + specular) * radiance * NdotL; // ks has been included in specular
     }
 
+    // 3. Lightmap
+    float2 lightUV;
+    OUTPUT_LIGHTMAP_UV(surface.lightUV, unity_LightmapST, lightUV);
+    float3 gi = SAMPLE_GI(lightUV, 0, surface.realNormalDir);
+    L = surface.realNormalDir; // the light direction is the reflection of view direction
+    H = normalize(V + L);
+    NDF = NormalDistributionGGX(N, H, surface.roughness);
+    G = Geometry_Direct_Smith(N, V, L, surface.roughness);
+    F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
+    nomin = NDF * G * F;
+    denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+    specular = nomin / denom;
+    ks = F;
+    kd = float3(1, 1, 1) - ks;
+    kd *= 1 - surface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+    NdotL = max(dot(N, L), 0);
+    Lo += (kd * surface.albedo / PI + specular) * gi * NdotL; // ks has been included in specular
+    
     float3 F2 = FresnelSchlickRoughness(max(dot(N, V), 0), f0, surface.roughness);
     float3 ks2 = F2;
     float3 kd2 = float3(1, 1, 1) - ks2;
@@ -335,6 +346,8 @@ float4 IBL(IBLSurface surface)
     float3 ambient = (kd2 * diffuse + specularInIBL) * surface.ao;
     // float3 ambient = float3(1, 1, 1) * surface.albedo * surface.ao;
     float3 color = ambient + Lo;
+
+    color = MixFogColor(color.rgb, unity_FogColor, unity_FogParams.x);
     
     return float4(color, 1);
 }
@@ -363,4 +376,179 @@ inline float4 SampleEnvironmentMap(float3 positionOS, float roughness)
         }
     }
     return float4(result / totalWeight, 1);
+}
+
+struct SSSSurface
+{
+    BRDFSurface brdfSurface;
+    float distortion;
+    float power;
+    float scale;
+    float thickness;
+    
+};
+
+float4 FastSSS(SSSSurface surface)
+{
+    BRDFSurface brdfSurface = surface.brdfSurface;
+    float3 N = normalize(brdfSurface.normalDir);
+    float3 V = normalize(brdfSurface.viewDir);
+    float3 f0 = float3(0.04, 0.04, 0.04);
+    f0 = lerp(f0, brdfSurface.albedo, brdfSurface.metallic);
+
+    Light mainLight = GetMainLight(TransformWorldToShadowCoord(brdfSurface.worldPos));
+    float3 L = mainLight.direction;
+    float3 H = normalize(V + L);
+    float3 Lo = float3(0, 0, 0);
+
+    // 1. main light
+    float attenuation = mainLight.shadowAttenuation;
+    float3 radiance = mainLight.color * attenuation;
+    //float3 radiance = mainLight.color * mainLight.distanceAttenuation;
+    float NDF = NormalDistributionGGX(N, H, brdfSurface.roughness);
+    float G = Geometry_Direct_Smith(N, V, L, brdfSurface.roughness);
+    float3 F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
+
+    float3 nomin = NDF * G * F;
+    float denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+    float3 specular = nomin / denom;
+    float3 ks = F;
+    float3 kd = float3(1, 1, 1) - ks;
+    kd *= 1 - brdfSurface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+    float NdotL = max(dot(N, L), 0);
+    Lo += (kd * brdfSurface.albedo / PI + specular) * radiance * NdotL; // ks has been included in specular
+
+    // calculate the SSS color
+    float3 TH = normalize(L + N * surface.distortion);
+    float intensity = pow(max(dot(V, -TH), 0), surface.power) * surface.scale;
+    intensity += mainLight.shadowAttenuation * surface.thickness;
+    float3 sssColor = brdfSurface.albedo * mainLight.color * intensity;
+
+    // 2. additional lights
+    for (int i = 0; i < GetAdditionalLightsCount(); i++)
+    {
+        Light additionalLight = GetAdditionalLight(i, brdfSurface.worldPos, TransformWorldToShadowCoord(brdfSurface.worldPos));
+        float3 L = additionalLight.direction;
+        float3 H = normalize(V + L);
+        float3 radiance = additionalLight.color * additionalLight.shadowAttenuation * additionalLight.distanceAttenuation;
+        // float3 radiance = additionalLight.color * additionalLight.distanceAttenuation;
+        float NDF = NormalDistributionGGX(N, H, brdfSurface.roughness);
+        float G = Geometry_Direct_Smith(N, V, L, brdfSurface.roughness);
+        float3 F = FresnelSchlick(clamp(dot(H, V), 0 ,1), f0);
+
+        float3 nomin = NDF * G * F;
+        float denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+        float3 specular = nomin / denom;
+        float3 ks = F;
+        float3 kd = float3(1, 1, 1) - ks;
+        kd *= 1 - brdfSurface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+        float NdotL = max(dot(N, L), 0);
+        Lo += (kd * brdfSurface.albedo / PI + specular) * radiance * NdotL; // ks has been included in specular
+
+        float3 TH = normalize(L + N * surface.distortion);
+        float intensity = pow(max(dot(V, -TH), 0), surface.power) * surface.scale;
+        intensity *= additionalLight.shadowAttenuation * additionalLight.distanceAttenuation * (1 - surface.thickness);
+        float3 sssColor = brdfSurface.albedo * additionalLight.color * intensity;
+
+        Lo += sssColor;
+    }
+
+    float3 ambient = float3(0.5, 0.5, 0.5) * brdfSurface.albedo * brdfSurface.ao;
+    float3 ambSssColor = brdfSurface.albedo.rgb * ambient * intensity;
+    ambient += ambSssColor;
+    return float4(ambient + Lo, 1);
+}
+
+struct EmissionIBLSurface
+{
+    IBLSurface iblSurface;
+    float3 emission;
+};
+
+float4 EmissionBRDF(EmissionIBLSurface eSurface)
+{
+    IBLSurface surface = eSurface.iblSurface;
+    float3 N = normalize(surface.normalDir);
+    float3 V = normalize(surface.viewDir);
+    float3 f0 = float3(0.04, 0.04, 0.04);
+    f0 = lerp(f0, surface.albedo, surface.metallic);
+    float4 shadowCoord = TransformWorldToShadowCoord(surface.worldPos);
+
+    Light mainLight = GetMainLight(shadowCoord);
+    float3 L = mainLight.direction;
+    float3 H = normalize(V + L);
+    float3 Lo = float3(0, 0, 0);
+
+    // 1. main light
+    float3 radiance = mainLight.color * mainLight.distanceAttenuation * mainLight.shadowAttenuation;
+    float NDF = NormalDistributionGGX(N, H, surface.roughness);
+    float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
+    float3 F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
+
+    float3 nomin = NDF * G * F;
+    float denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+    float3 specular = nomin / denom;
+    float3 ks = F;
+    float3 kd = float3(1, 1, 1) - ks;
+    kd *= 1 - surface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+    float NdotL = max(dot(N, L), 0);
+    Lo += (kd * surface.albedo / PI + specular) * radiance * NdotL; // ks has been included in specular
+
+    // 2. additional lights
+    for (int i = 0; i < GetAdditionalLightsCount(); i++)
+    {
+        Light additionalLight = GetAdditionalLight(i, surface.worldPos);
+        float3 L = additionalLight.direction;
+        float3 H = normalize(V + L);
+        #ifdef SHADOW_RECEIVER
+        float3 radiance = additionalLight.color * additionalLight.shadowAttenuation;
+        #else
+        float3 radiance = additionalLight.color * additionalLight.distanceAttenuation * additionalLight.shadowAttenuation;
+        #endif
+        float NDF = NormalDistributionGGX(N, H, surface.roughness);
+        float G = Geometry_Direct_Smith(N, V, L, surface.roughness);
+        float3 F = FresnelSchlick(clamp(dot(H, V), 0 ,1), f0);
+
+        float3 nomin = NDF * G * F;
+        float denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+        float3 specular = nomin / denom;
+        float3 ks = F;
+        float3 kd = float3(1, 1, 1) - ks;
+        kd *= 1 - surface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+        float NdotL = max(dot(N, L), 0);
+        Lo += (kd * surface.albedo / PI + specular) * radiance * NdotL; // ks has been included in specular
+    }
+
+    // 3. Lightmap
+    float2 lightUV;
+    OUTPUT_LIGHTMAP_UV(surface.lightUV, unity_LightmapST, lightUV);
+    float3 gi = SAMPLE_GI(lightUV, 0, surface.realNormalDir);
+    L = surface.realNormalDir; // the light direction is the reflection of view direction
+    H = normalize(V + L);
+    NDF = NormalDistributionGGX(N, H, surface.roughness);
+    G = Geometry_Direct_Smith(N, V, L, surface.roughness);
+    F = FresnelSchlick(clamp(dot(H, V), 0, 1), f0);
+    nomin = NDF * G * F;
+    denom = 4 * max(dot(N, V), 0) * max(dot(N, L), 0) + 1e-4f; // prevent divided by zero
+    specular = nomin / denom;
+    ks = F;
+    kd = float3(1, 1, 1) - ks;
+    kd *= 1 - surface.metallic; // a linear blend for partly metal & metal have no diffuse reflection
+    NdotL = max(dot(N, L), 0);
+    Lo += (kd * surface.albedo / PI + specular) * gi * NdotL; // ks has been included in specular
+    
+    float3 F2 = FresnelSchlickRoughness(max(dot(N, V), 0), f0, surface.roughness);
+    float3 ks2 = F2;
+    float3 kd2 = float3(1, 1, 1) - ks2;
+    kd2 *= 1 - surface.metallic;
+    float3 diffuse = surface.irradiance * surface.albedo;
+    float NdotV = max(dot(N, V), 0);
+    float2 envBRDF = SAMPLE_TEXTURE2D(_GlobalIntegrateMap, sampler_GlobalIntegrateMap, float2(NdotV, surface.roughness)).rg;
+    float3 specularInIBL = surface.specular * (F2 * envBRDF.x + envBRDF.y);
+    float3 ambient = (kd2 * diffuse + specularInIBL) * surface.ao;
+    // float3 ambient = float3(1, 1, 1) * surface.albedo * surface.ao;
+    float3 color = ambient + Lo;
+    color.rgb += eSurface.emission;
+    color = MixFogColor(color, unity_FogColor, unity_FogParams.x);
+    return float4(color, 1);
 }

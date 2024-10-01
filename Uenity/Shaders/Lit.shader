@@ -30,9 +30,8 @@ Shader "Custom/Lit"
 
             #pragma target 4.5
             #pragma vertex vert
-            #define SHADOW_RECEIVER_ON
             #pragma fragment frag
-            #include "Assets/Shaders/BDRF.hlsl"
+            #include_with_pragmas "Assets/Shaders/BRDF/BDRF.hlsl"
             #include "Assets/Shaders/Utils.hlsl"
 
             float4 _Albedo;
@@ -61,6 +60,7 @@ Shader "Custom/Lit"
                 float4 positionOS : POSITION;
                 float3 normalOS : NORMAL;
                 float2 uv : TEXCOORD0;
+                float2 lightmapUV : TEXCOORD1;
             };
 
             struct VertOut
@@ -70,6 +70,7 @@ Shader "Custom/Lit"
                 float3 positionWS : TEXCOORD1;
                 float3 positionOS : TEXCOORD2;
                 float3 normalWS : TEXCOORD3;
+                float2 lightmapUV : TEXCOORD4;
             };
 
             inline float4 SampleEnvironmentMap(VertOut input, float roughness)
@@ -106,6 +107,7 @@ Shader "Custom/Lit"
                 output.normalWS = normalize(TransformObjectToWorldNormal(input.normalOS));
                 output.positionOS = input.positionOS;
                 output.uv = input.uv;
+                output.lightmapUV = input.lightmapUV;
                 return output;
             }
 
@@ -128,6 +130,7 @@ Shader "Custom/Lit"
                 surface.worldPos = input.positionWS;
                 
                 surface.normalDir = input.normalWS;
+                surface.realNormalDir = normal;
                 surface.viewDir = normalize(_WorldSpaceCameraPos - input.positionWS);
 
                 float ao = SAMPLE_TEXTURE2D(_AO, sampler_AO, input.uv).r;
@@ -138,6 +141,8 @@ Shader "Custom/Lit"
                 const int MAX_LOD = 5;
                 float mipLevel = MAX_LOD * surface.roughness;
                 surface.specular = SAMPLE_TEXTURECUBE_LOD(_SpecularMaps, sampler_SpecularMaps, reflectionDir, mipLevel).rgb;
+
+                surface.lightUV = input.lightmapUV;
                 
                 return IBL(surface);
             }
