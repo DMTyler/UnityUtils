@@ -32,6 +32,7 @@ Shader "Custom/Lit"
             #pragma vertex vert
             #pragma fragment frag
             #include_with_pragmas "Assets/Shaders/BRDF/BDRF.hlsl"
+            #include "Assets/Shaders/BRDF/Probe/Probe.hlsl"
             #include "Assets/Shaders/Utils.hlsl"
 
             float4 _Albedo;
@@ -46,8 +47,8 @@ Shader "Custom/Lit"
             TEXTURE2D(_MetallicTexture);
             SAMPLER(sampler_MetallicTexture);
 
-            TEXTURE2D(_AO);
-            SAMPLER(sampler_AO);
+            TEXTURE2D(_AOTexture);
+            SAMPLER(sampler_AOTexture);
 
             TEXTURECUBE(_DiffuseMap);
             SAMPLER(sampler_DiffuseMap);
@@ -133,14 +134,15 @@ Shader "Custom/Lit"
                 surface.realNormalDir = normal;
                 surface.viewDir = normalize(_WorldSpaceCameraPos - input.positionWS);
 
-                float ao = SAMPLE_TEXTURE2D(_AO, sampler_AO, input.uv).r;
+                float ao = SAMPLE_TEXTURE2D(_AOTexture, sampler_AOTexture, input.uv).r;
                 surface.ao = ao;
 
-                surface.irradiance = SAMPLE_TEXTURECUBE(_DiffuseMap, sampler_DiffuseMap, reflectionDir).rgb;
+                float4 diffuse = SAMPLE_TEXTURECUBE(_DiffuseMap, sampler_DiffuseMap, reflectionDir);
+                surface.diffuse = diffuse;
 
-                const int MAX_LOD = 5;
-                float mipLevel = MAX_LOD * surface.roughness;
-                surface.specular = SAMPLE_TEXTURECUBE_LOD(_SpecularMaps, sampler_SpecularMaps, reflectionDir, mipLevel).rgb;
+                float lod = surface.roughness * 5;
+                float4 specular = SAMPLE_TEXTURECUBE_LOD(_SpecularMaps, sampler_DiffuseMap, reflectionDir, lod);
+                surface.specular = specular;
 
                 surface.lightUV = input.lightmapUV;
                 

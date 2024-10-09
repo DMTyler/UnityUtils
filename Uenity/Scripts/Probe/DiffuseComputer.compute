@@ -1,0 +1,68 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#include "Assets/Shaders/Utils.hlsl"
+#include "Assets/Shaders/BRDF/Probe/Probe.hlsl"
+
+// The Env Map
+RWTexture2D<float4> _EnvMapFace0;
+RWTexture2D<float4> _EnvMapFace1;
+RWTexture2D<float4> _EnvMapFace2;
+RWTexture2D<float4> _EnvMapFace3;
+RWTexture2D<float4> _EnvMapFace4;
+RWTexture2D<float4> _EnvMapFace5;
+
+// The parameters
+float _Step;
+float _Intensity;
+int _Resolution;
+int _CurrentFace;
+int _EnvMapResolution;
+
+RWTexture2D<float4> Result;
+
+float4 SampleEnvMap(int face, float2 uv)
+{
+    uint2 id = round(uv * (_EnvMapResolution - 1));
+    switch (face)
+    {
+        case 0: return _EnvMapFace0[id];
+        case 1: return _EnvMapFace1[id];
+        case 2: return _EnvMapFace2[id];
+        case 3: return _EnvMapFace3[id];
+        case 4: return _EnvMapFace4[id];
+        case 5: return _EnvMapFace5[id];
+        default: return _EnvMapFace0[id];
+    }
+}
+
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    float u = id.x / (float)_Resolution;
+    float v = id.y / (float)_Resolution;
+    float3 up = float3(0, 0, 1);
+    float3 n = GetCubeDirection(float2(u, v), _CurrentFace);
+    float3 right = cross(up, n);
+    up = cross(n, right);
+    int nrSample = 0;
+    float4 irradiance = float4(0, 0, 0, 1);
+    for (float phi = 0; phi < 2 * PI; phi += _Step)
+    {
+        for (float theta = 0; theta < 0.5 * PI; theta += _Step)
+        {
+            float3 direction = sin(theta) * cos(phi) * right + sin(theta) * sin(phi) * up + cos(theta) * n;
+            float2 uv = GetUV(direction);
+            int face = GetFace(direction);
+            float4 color = SampleEnvMap(face, uv);
+            irradiance += color;
+            nrSample++;
+        }
+    }
+    irradiance *= _Intensity;
+    irradiance /= nrSample;
+    Result[id.xy] = irradiance;
+}
+    
+    
+

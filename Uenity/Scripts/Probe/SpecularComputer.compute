@@ -1,0 +1,69 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#define PI 3.14159265359
+#include "Assets/Shaders/BRDF/BDRF.hlsl"
+#include "Assets/Shaders/BRDF/Probe/Probe.hlsl"
+// The Env Map
+RWTexture2D<float4> _EnvMapFace0;
+RWTexture2D<float4> _EnvMapFace1;
+RWTexture2D<float4> _EnvMapFace2;
+RWTexture2D<float4> _EnvMapFace3;
+RWTexture2D<float4> _EnvMapFace4;
+RWTexture2D<float4> _EnvMapFace5;
+
+int _SPP;
+int _Resolution;
+int _EnvMapResolution;
+int _CurrentFace;
+int _CurrentLOD;
+float _Intensity;
+
+RWTexture2D<float4> Result;
+
+float4 SampleEnvMap(int face, float2 uv)
+{
+    uint2 id = round(uv * (_EnvMapResolution - 1));
+    switch (face)
+    {
+        case 0: return _EnvMapFace0[id];
+        case 1: return _EnvMapFace1[id];
+        case 2: return _EnvMapFace2[id];
+        case 3: return _EnvMapFace3[id];
+        case 4: return _EnvMapFace4[id];
+        case 5: return _EnvMapFace5[id];
+        default: return _EnvMapFace0[id];
+    }
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    float u = (id.x + 0.5) / _Resolution;
+    float v = (id.y + 0.5) / _Resolution;
+    float2 uv = float2(u, v);
+    float3 N = GetCubeDirection(uv, _CurrentFace);
+    float3 V = N; // We assume the view direction is the same as the normal
+    float4 irradiance = float4(0, 0, 0, 0);
+    float weight = 0;
+    int sampleCount = _SPP;
+    for (int i = 0; i < sampleCount; i++)
+    {
+        float2 Xi = Hammersley(i, sampleCount);
+        float3 H = ImportanceSampleGGX(Xi, N, _CurrentLOD / 5.0f);
+        float3 L = reflect(-V, H);
+        float NoL = saturate(dot(N, L));
+        if (NoL > 0)
+        {
+            float2 uv_inner = GetUV(L);
+            int face_inner = GetFace(L);
+            float4 sample = SampleEnvMap(face_inner, uv_inner);
+            irradiance += sample * NoL;
+            weight += NoL;
+        }
+    }
+    
+    irradiance *= _Intensity;
+    irradiance /= weight;
+
+    Result[id.xy] = irradiance;
+}

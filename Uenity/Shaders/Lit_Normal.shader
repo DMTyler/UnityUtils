@@ -15,7 +15,7 @@ Shader "Custom/Lit_Normal"
         _NormalMap("Normal Map", 2D) = "white" {}
         _NormalMapScale("Normal Map Scale", Range(0, 10)) = 1
         _DiffuseMap("Diffuse Map", Cube) = "" {}
-        _SpecularMaps("Specular Maps", Cube) = "" {}
+        _SpecularMaps("Specular Maps", CubeArray) = "" {}
     }
     
     SubShader
@@ -59,6 +59,7 @@ Shader "Custom/Lit_Normal"
 
             #include_with_pragmas "Assets/Shaders/BRDF/BDRF.hlsl"
             #include "Assets/Shaders/Utils.hlsl"
+            #include "Assets/Shaders/BRDF/Probe/Probe.hlsl"
 
             float4 _Albedo;
             TEXTURE2D(_AlbedoTexture);
@@ -72,13 +73,13 @@ Shader "Custom/Lit_Normal"
             TEXTURE2D(_MetallicTexture);
             SAMPLER(sampler_MetallicTexture);
 
-            TEXTURE2D(_AO);
-            SAMPLER(sampler_AO);
+            TEXTURE2D(_AOTexture);
+            SAMPLER(sampler_AOTexture);
 
             TEXTURECUBE(_DiffuseMap);
             SAMPLER(sampler_DiffuseMap);
 
-            TEXTURECUBE(_SpecularMaps);
+            TEXTURECUBE_ARRAY(_SpecularMaps);
             SAMPLER(sampler_SpecularMaps);
 
             float _NormalMapScale;
@@ -139,7 +140,7 @@ Shader "Custom/Lit_Normal"
                 surface.worldPos = input.positionWS;
 
                 float4 normalColor = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, uv);
-                float3 normalTBN= UnpackNormal(normalColor);
+                float3 normalTBN= UnpackNormalScale(normalColor, _NormalMapScale);
                 float3 tangent = normalize(input.tangent);
                 float3 bitangent = normalize(input.bitangent);
 
@@ -150,14 +151,15 @@ Shader "Custom/Lit_Normal"
                 surface.realNormalDir = normal;
                 surface.viewDir = normalize(_WorldSpaceCameraPos - input.positionWS);
 
-                float ao = SAMPLE_TEXTURE2D(_AO, sampler_AO, uv).r;
+                float ao = SAMPLE_TEXTURE2D(_AOTexture, sampler_AOTexture, uv).r;
                 surface.ao = ao;
 
-                surface.irradiance = SAMPLE_TEXTURECUBE(_DiffuseMap, sampler_DiffuseMap, reflectionDir).rgb;
+                float4 diffuse = SAMPLE_TEXTURECUBE(_DiffuseMap, sampler_DiffuseMap, reflectionDir);
+                surface.diffuse = diffuse;
 
-                const int MAX_LOD = 5;
-                float mipLevel = MAX_LOD * surface.roughness;
-                surface.specular = SAMPLE_TEXTURECUBE_LOD(_SpecularMaps, sampler_SpecularMaps, reflectionDir, mipLevel).rgb;
+                float lod = surface.roughness * 5;
+                float4 specular = SAMPLE_TEXTURECUBE_ARRAY(_SpecularMaps, sampler_SpecularMaps, reflectionDir, lod);
+                surface.specular = specular;
                 surface.lightUV = input.uv.zw;
                 return IBL(surface);
             }
