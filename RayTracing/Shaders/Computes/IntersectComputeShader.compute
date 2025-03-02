@@ -1,0 +1,236 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+struct Triangle
+{
+    float3 v0;
+    float3 v1;
+    float3 v2;
+};
+
+struct AABB
+{
+    float3 min;
+    float3 max;
+};
+
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+    float3 i_direction;
+};
+
+RWBuffer<float> BVH;
+RWBuffer<float> Triangles;
+RWBuffer<float4> Rays;
+RWTexture2D<float4> RayDir;
+
+float4 CameraPosition;
+
+RWTexture2D<float4> Result;
+
+RWStructuredBuffer<int> Meshes;
+RWStructuredBuffer<int> Materials;
+
+
+bool Intersect(const Triangle tri, const Ray ray, out float tnear)
+{
+    tnear = 1e+10;
+    float3 s = ray.origin - tri.v0;
+    float3 e1 = tri.v1 - tri.v0;
+    float3 e2 = tri.v2 - tri.v0;
+    float3 s1 = cross(ray.direction, e2);
+    float3 s2 = cross(s, e1);
+
+    float s1e1 = dot(s1, e1);
+    float t = dot(s2, e2) / s1e1;
+    float b1 = dot(s1, s) / s1e1;
+    float b2 = dot(s2, ray.direction) / s1e1;
+
+    if (t >= 0 && b1 >= 0 && b2 >= 0 && b1 + b2 <= 1)
+    {
+        tnear = t;
+        return true;
+    }
+    
+    return false;
+}
+
+bool Intersect2(const AABB aabb, const Ray ray)
+{
+    float3 lb = aabb.min;
+    float3 rt = aabb.max;
+    
+    // lb is the corner of AABB with minimal coordinates - left bottom, rt is maximal corner
+    // r.org is origin of ray
+    float t1 = (lb.x - ray.origin.x) * ray.i_direction.x;
+    float t2 = (rt.x - ray.origin.x) * ray.i_direction.x;
+    float t3 = (lb.y - ray.origin.y) * ray.i_direction.y;
+    float t4 = (rt.y - ray.origin.y) * ray.i_direction.y;
+    float t5 = (lb.z - ray.origin.z) * ray.i_direction.z;
+    float t6 = (rt.z - ray.origin.z) * ray.i_direction.z;
+
+    float tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6));
+    float tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6));
+
+    // if tmax < 0, ray (line) is intersecting AABB, but the whole AABB is behind us
+    if (tmax < 0)
+    {
+        return false;
+    }
+
+    // if tmin > tmax, ray doesn't intersect AABB
+    if (tmin > tmax)
+    {
+        return false;
+    }
+    
+    return true;
+}
+
+bool Intersect(const AABB aabb, const Ray ray)
+{
+    double tx1 = (aabb.min.x - ray.origin.x) * ray.i_direction.x;
+    double tx2 = (aabb.max.x - ray.origin.x) * ray.i_direction.x;
+
+    double tmin = min(tx1, tx2);
+    double tmax = max(tx1, tx2);
+
+    double ty1 = (aabb.min.y - ray.origin.y) * ray.i_direction.y;
+    double ty2 = (aabb.max.y - ray.origin.y) * ray.i_direction.y;
+
+    tmin = max(tmin, min(ty1, ty2));
+    tmax = min(tmax, max(ty1, ty2));
+        
+    return tmax >= 0 && tmax >= tmin;
+}
+
+bool FindNextNode(inout int currentIndex, inout int lastIndex)
+{
+    if (round(BVH[currentIndex + 8]) == 0)
+    {
+        return false;
+    }
+    
+    while(currentIndex >= 0)
+    {
+        int parentIndex = round(BVH[currentIndex + 6]);
+        int leftIndex = round(BVH[currentIndex + 7]);
+        int rightIndex = round(BVH[currentIndex + 8]);
+
+        // If from left child and has right child, go to right child
+        if (lastIndex == leftIndex && rightIndex > 0)
+        {
+            lastIndex = currentIndex;
+            currentIndex = rightIndex;
+            return true;
+        }
+        // If from left child and no right child, go to parent
+        else if(lastIndex == leftIndex && rightIndex == 0)
+        {
+            lastIndex = currentIndex;
+            currentIndex = parentIndex;
+        }
+        // If from right child, go to parent
+        else if (lastIndex == rightIndex)
+        {
+            lastIndex = currentIndex;
+            currentIndex = parentIndex;
+        }
+        // If from parent, go to left child
+        else if (lastIndex == parentIndex)
+        {
+            lastIndex = currentIndex;
+            currentIndex = leftIndex;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+int GetHit(const Ray ray)
+{
+    // bias = 9
+    // min_x = +0
+    // min_y = +1
+    // min_z = +2
+    // max_x = +3
+    // max_y = +4
+    // max_z = +5
+    // parent_index = +6
+    // left_index = +7 (negative as tri_start_point if leaf)
+    // right_index = +8 (negative as tri_end_pont if leaf)
+
+    bool flag = true;
+    int lastIndex = -1;
+    int currentIndex = 0;
+    
+    float tMin = 1e+9;
+    int triIndex = -1;
+    
+    while(flag)
+    {
+        float3 min = float3(BVH[currentIndex + 0], BVH[currentIndex + 1], BVH[currentIndex + 2]);
+        float3 max = float3(BVH[currentIndex + 3], BVH[currentIndex + 4], BVH[currentIndex + 5]);
+        AABB aabb;
+        aabb.min = min;
+        aabb.max = max;
+        int parentIndex = round(BVH[currentIndex + 6]);
+        
+        if (!Intersect2(aabb, ray))
+        {
+            lastIndex = currentIndex;
+            currentIndex = parentIndex;
+        }
+        else
+        {
+            int rightIndex = round(BVH[currentIndex + 8]);
+            if (rightIndex < 0)
+            {
+                int leftIndex = round(BVH[currentIndex + 7]);
+                int triLeftPtr = -leftIndex - 1;
+                int triRightPtr = -rightIndex - 1;
+                for (int i = triLeftPtr; i < triRightPtr; i += 11)
+                {
+                    Triangle tri;
+                    tri.v0 = float3(Triangles[i + 2], Triangles[i + 3], Triangles[i + 4]);
+                    tri.v1 = float3(Triangles[i + 5], Triangles[i + 6], Triangles[i + 7]);
+                    tri.v2 = float3(Triangles[i + 8], Triangles[i + 9], Triangles[i + 10]);
+                    float t;
+                    if (Intersect(tri, ray, t) && t < tMin)
+                    {
+                        tMin = t;
+                        triIndex = i;
+                    }
+                }
+                
+                lastIndex = currentIndex;
+                currentIndex = parentIndex;
+            }
+        }
+        // find next node
+        flag = FindNextNode(currentIndex, lastIndex);
+    }
+    
+    return triIndex;
+}
+
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    Ray ray;
+    ray.direction = RayDir[id.xy].xyz * 2 - 1;
+    ray.i_direction = 1 / ray.direction;
+    ray.origin = CameraPosition.xyz;
+    int hit = GetHit(ray);
+    int color = hit > 0? 1 : 0;
+    Result[id.xy] = float4(color, color, color, 1);
+    if (hit <= 0) return;
+    int matIndex = Triangles[hit];
+    int meshIndex = Triangles[hit + 1];
+    Materials[matIndex] = hit > 0? 1 : 0;
+    Meshes[meshIndex] = hit > 0? 1 : 0;
+}

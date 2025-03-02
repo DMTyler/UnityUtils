@@ -1,0 +1,29 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#include "UnityCG.cginc"
+
+float NearClip;
+float Width;
+float Height;
+float Aspect;
+float Fov;
+float4x4 Object2World;
+
+RWTexture2D<float4> Result;
+
+float3 GetRayDirection(float2 uv)
+{
+    float2 xy = uv * 2 - 1;
+    float nearHeight = 2 * tan(Fov / 2) * NearClip;
+    float nearWidth = nearHeight * Aspect;
+    float3 direction = normalize(float3(xy.x * nearWidth / 2, xy.y * nearHeight / 2, NearClip));
+    return direction;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    float2 uv = float2(id.xy) / float2(Width, Height);
+    float3 direction = GetRayDirection(uv);
+    Result[id.xy] = mul(Object2World, float4(direction, 1)) / 2 + 0.5;
+}
